@@ -26,7 +26,13 @@ jobs:
       # TODO: Replace these with your real pipeline steps
       - name: Install deps
         run: |
-          npm ci
+          if [ -f package-lock.json ]; then
+            echo "package-lock.json found — running npm ci"
+            npm ci
+          else
+            echo "package-lock.json missing — running npm install"
+            npm install
+          fi
       - name: Run tests
         run: |
           npm test
@@ -81,5 +87,3 @@ jobs:
             -d "$payload" \
             "$WEBHOOK_URL" \
           || echo "WARN: webhook POST failed (non-blocking)"
-
-
