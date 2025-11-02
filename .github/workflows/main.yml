@@ -1,14 +1,85 @@
-      - name: Send webhook to n8n on failure
+name: Notify n8n on Failure
+
+on:
+  push:
+    branches:
+      - '**'   # run on all branches
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-n8n-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # TODO: Replace these with your real pipeline steps
+      - name: Install deps
         run: |
-          curl -X POST \
+          npm ci
+      - name: Run tests
+        run: |
+          npm test
+
+      # ---- Only fires if something above failed ----
+      - name: Send failure webhook to n8n
+        if: ${{ failure() }}
+        env:
+          # Prefer storing this as a secret and referencing it here
+          WEBHOOK_URL: https://n8n.srv1073770.hstgr.cloud/webhook/github-issue
+        run: |
+          # Ensure jq exists (usually present on ubuntu-latest, but this is safe)
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -y && sudo apt-get install -y jq
+          fi
+
+          payload="$(jq -n \
+            --arg status      "failed" \
+            --arg repository  "${{ github.repository }}" \
+            --arg commit      "${{ github.sha }}" \
+            --arg actor       "${{ github.actor }}" \
+            --arg ref         "${{ github.ref }}" \
+            --arg branch      "${{ github.ref_name }}" \
+            --arg run_id      "${{ github.run_id }}" \
+            --arg run_url     "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --arg workflow    "${{ github.workflow }}" \
+            --arg job         "${{ github.job }}" \
+            --arg event       "${{ github.event_name }}" \
+            --arg attempt     "${{ github.run_attempt }}" \
+            '{
+              status: $status,
+              repository: $repository,
+              commit: $commit,
+              actor: $actor,
+              ref: $ref,
+              branch: $branch,
+              run_id: $run_id,
+              run_url: $run_url,
+              workflow: $workflow,
+              job: $job,
+              event: $event,
+              attempt: $attempt
+            }'
+          )"
+
+          # Post with retries; don't mask the original job failure
+          curl -sS \
+            --retry 5 \
+            --retry-connrefused \
+            --max-time 20 \
             -H "Content-Type: application/json" \
-            -d "{
-              \"status\": \"failed\",
-              \"repository\": \"${{ github.repository }}\",
-              \"commit\": \"${{ github.sha }}\",
-              \"actor\": \"${{ github.actor }}\",
-              \"branch\": \"${{ github.ref_name }}\",
-              \"run_id\": \"${{ github.run_id }}\",
-              \"run_url\": \"https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
-            }" \
-            https://n8n.srv1073770.hstgr.cloud/webhook/github-issue
+            -d "$payload" \
+            "$WEBHOOK_URL" \
+          || echo "WARN: webhook POST failed (non-blocking)"
+
+
